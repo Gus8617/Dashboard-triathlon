@@ -1,23 +1,22 @@
 # Dépendances
 node_modules/
-package-lock.json
+frontend/node_modules/
 
-# Variables d'environnement
+# Configuration sensible
 .env
-.env.local
-.env.production
 
 # Base de données
-data/
-*.db
-*.sqlite
+data/db.json
 
 # Logs
-logs/
+logs/*.log
 *.log
-npm-debug.log*
 
-# Système d'exploitation
+# Build
+public/assets/
+frontend/dist/
+
+# OS
 .DS_Store
 Thumbs.db
 
@@ -27,16 +26,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# Build
-dist/
-build/
-public/
-
-# Backup
+# Backups
 *.backup
 *.bak
-backups/
-
-# Autres
-.cache/
-tmp/

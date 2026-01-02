@@ -2,14 +2,16 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const crypto = require('crypto');
-const OAuth = require('oauth-1.0a');
+const { GarminConnect } = require('garmin-connect');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  credentials: true
+}));
 app.use(express.json());
-app.use(express.static('public')); // Pour servir le frontend React
+app.use(express.static('public'));
 
 const PORT = process.env.PORT || 3000;
 
@@ -18,15 +20,12 @@ const config = {
   strava: {
     clientId: process.env.STRAVA_CLIENT_ID,
     clientSecret: process.env.STRAVA_CLIENT_SECRET,
-    redirectUri: process.env.STRAVA_REDIRECT_URI || `http://localhost:${PORT}/auth/strava/callback`
+    redirectUri: process.env.STRAVA_REDIRECT_URI || `http://localhost:${PORT}/auth/strava/callback`,
+    refreshToken: process.env.STRAVA_REFRESH_TOKEN || null
   },
   garmin: {
-    consumerKey: process.env.GARMIN_CONSUMER_KEY,
-    consumerSecret: process.env.GARMIN_CONSUMER_SECRET,
-    requestTokenUrl: 'https://connectapi.garmin.com/oauth-service/oauth/request_token',
-    accessTokenUrl: 'https://connectapi.garmin.com/oauth-service/oauth/access_token',
-    authorizeUrl: 'https://connect.garmin.com/oauthConfirm',
-    apiBaseUrl: 'https://apis.garmin.com/wellness-api/rest'
+    email: process.env.GARMIN_EMAIL,
+    password: process.env.GARMIN_PASSWORD
   }
 };
 
@@ -37,13 +36,24 @@ const dbPath = './data/db.json';
 function loadDB() {
   if (!fs.existsSync('./data')) fs.mkdirSync('./data');
   if (!fs.existsSync(dbPath)) {
-    fs.writeFileSync(dbPath, JSON.stringify({ 
+    const initialDB = { 
       activities: [], 
       sleepData: [], 
       tokens: {} 
-    }));
+    };
+    fs.writeFileSync(dbPath, JSON.stringify(initialDB, null, 2));
+    return initialDB;
   }
-  return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+  try {
+    const data = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    if (!Array.isArray(data.activities)) data.activities = [];
+    if (!Array.isArray(data.sleepData)) data.sleepData = [];
+    if (!data.tokens) data.tokens = {};
+    return data;
+  } catch (error) {
+    console.error('Erreur lecture DB:', error);
+    return { activities: [], sleepData: [], tokens: {} };
+  }
 }
 
 function saveDB(data) {
@@ -52,13 +62,11 @@ function saveDB(data) {
 
 // ===== STRAVA API =====
 
-// Étape 1: Rediriger vers Strava pour autorisation
 app.get('/auth/strava', (req, res) => {
   const authUrl = `https://www.strava.com/oauth/authorize?client_id=${config.strava.clientId}&redirect_uri=${config.strava.redirectUri}&response_type=code&scope=read,activity:read_all`;
   res.redirect(authUrl);
 });
 
-// Étape 2: Callback Strava avec le code d'autorisation
 app.get('/auth/strava/callback', async (req, res) => {
   const { code } = req.query;
   
@@ -85,19 +93,30 @@ app.get('/auth/strava/callback', async (req, res) => {
   }
 });
 
-// Rafraîchir le token Strava si nécessaire
 async function getValidStravaToken() {
   const db = loadDB();
-  const tokens = db.tokens.strava;
+  let tokens = db.tokens.strava;
 
-  if (!tokens) throw new Error('Pas de tokens Strava');
+  // Si pas de token en DB, utiliser celui du .env
+  if (!tokens && config.strava.refreshToken) {
+    console.log('ℹ️ Utilisation du refresh token depuis .env');
+    tokens = {
+      refreshToken: config.strava.refreshToken,
+      expiresAt: 0 // Forcera un refresh immédiat
+    };
+  }
+
+  if (!tokens) throw new Error('Pas de tokens Strava (ni DB ni .env)');
 
   const now = Date.now() / 1000;
-  if (tokens.expiresAt > now) {
+  
+  // Si le token est encore valide, le retourner
+  if (tokens.accessToken && tokens.expiresAt > now) {
     return tokens.accessToken;
   }
 
   // Rafraîchir le token
+  console.log('🔄 Rafraîchissement du token Strava...');
   try {
     const response = await axios.post('https://www.strava.com/oauth/token', {
       client_id: config.strava.clientId,
@@ -106,6 +125,9 @@ async function getValidStravaToken() {
       grant_type: 'refresh_token'
     });
 
+    console.log('✅ Token Strava rafraîchi avec succès');
+
+    // Sauvegarder le nouveau token en DB
     db.tokens.strava = {
       accessToken: response.data.access_token,
       refreshToken: response.data.refresh_token,
@@ -115,36 +137,65 @@ async function getValidStravaToken() {
 
     return response.data.access_token;
   } catch (error) {
-    throw new Error('Impossible de rafraîchir le token Strava');
+    console.error('❌ Erreur refresh token:', error.response?.data || error.message);
+    throw new Error('Impossible de rafraîchir le token Strava: ' + (error.response?.data?.message || error.message));
   }
 }
 
-// Synchroniser les activités Strava
 app.post('/api/sync/strava', async (req, res) => {
+  console.log('📥 Début synchronisation Strava...');
+  
   try {
-    const token = await getValidStravaToken();
-    const after = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
+    // Vérifier si un token existe (DB ou .env)
+    let db = loadDB();
+    if (!db.tokens.strava && !config.strava.refreshToken) {
+      console.error('❌ Aucun token Strava configuré');
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Veuillez d\'abord connecter votre compte Strava ou configurer STRAVA_REFRESH_TOKEN dans .env',
+        needsAuth: true
+      });
+    }
 
+    const token = await getValidStravaToken();
+    console.log('✓ Token Strava obtenu');
+    
+    const after = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
+    
     const response = await axios.get(
       `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=200`,
       { headers: { 'Authorization': `Bearer ${token}` } }
     );
 
-    const activities = response.data.map(act => ({
-      id: act.id,
-      name: act.name,
-      type: act.type,
-      date: act.start_date.split('T')[0],
-      duration: Math.round(act.moving_time / 60),
-      distance: act.distance / 1000,
-      avgHR: act.average_heartrate,
-      maxHR: act.max_heartrate,
-      elevation: act.total_elevation_gain,
-      tss: act.suffer_score,
-      source: 'Strava'
-    }));
+    console.log(`✓ ${response.data.length} activités récupérées de Strava`);
 
-    const db = loadDB();
+    const activities = response.data.map(act => {
+      let activityType = 'run';
+      if (act.type === 'Ride' || act.type === 'VirtualRide' || act.type === 'EBikeRide') {
+        activityType = 'bike';
+      } else if (act.type === 'Run' || act.type === 'VirtualRun') {
+        activityType = 'run';
+      } else if (act.type === 'Swim') {
+        activityType = 'swim';
+      }
+      
+      return {
+        id: act.id,
+        name: act.name,
+        type: activityType,
+        date: act.start_date.split('T')[0],
+        duration: Math.round(act.moving_time / 60),
+        distance: act.distance / 1000,
+        avgHR: act.average_heartrate,
+        maxHR: act.max_heartrate,
+        elevation: act.total_elevation_gain,
+        tss: act.suffer_score,
+        source: 'Strava'
+      };
+    });
+
+    // Recharger la DB pour avoir les dernières données
+    db = loadDB();
     const existingIds = new Set(db.activities.map(a => a.id));
     const newActivities = activities.filter(a => !existingIds.has(a.id));
     
@@ -153,204 +204,197 @@ app.post('/api/sync/strava', async (req, res) => {
     );
     saveDB(db);
 
+    console.log(`✓ ${newActivities.length} nouvelles activités ajoutées`);
+    console.log(`✓ Total: ${db.activities.length} activités`);
+
     res.json({ 
       success: true, 
       newActivities: newActivities.length,
       totalActivities: db.activities.length 
     });
   } catch (error) {
-    console.error('Erreur sync Strava:', error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ===== GARMIN API (OAuth 1.0a) =====
-
-const oauth = OAuth({
-  consumer: {
-    key: config.garmin.consumerKey,
-    secret: config.garmin.consumerSecret
-  },
-  signature_method: 'HMAC-SHA1',
-  hash_function(base_string, key) {
-    return crypto.createHmac('sha1', key).update(base_string).digest('base64');
-  }
-});
-
-// Variables temporaires pour OAuth flow
-let garminTempTokens = {};
-
-// Étape 1: Obtenir request token
-app.get('/auth/garmin', async (req, res) => {
-  try {
-    const requestData = {
-      url: config.garmin.requestTokenUrl,
-      method: 'POST'
-    };
-
-    const authHeader = oauth.toHeader(oauth.authorize(requestData));
-
-    const response = await axios.post(config.garmin.requestTokenUrl, null, {
-      headers: authHeader
-    });
-
-    // Parser la réponse (format: oauth_token=xxx&oauth_token_secret=yyy)
-    const params = new URLSearchParams(response.data);
-    const oauthToken = params.get('oauth_token');
-    const oauthTokenSecret = params.get('oauth_token_secret');
-
-    garminTempTokens[oauthToken] = oauthTokenSecret;
-
-    const authorizeUrl = `${config.garmin.authorizeUrl}?oauth_token=${oauthToken}`;
-    res.redirect(authorizeUrl);
-  } catch (error) {
-    console.error('Erreur Garmin OAuth:', error.response?.data || error.message);
-    res.redirect('/?garmin=error');
-  }
-});
-
-// Étape 2: Callback Garmin
-app.get('/auth/garmin/callback', async (req, res) => {
-  const { oauth_token, oauth_verifier } = req.query;
-  const oauthTokenSecret = garminTempTokens[oauth_token];
-
-  if (!oauthTokenSecret) {
-    return res.redirect('/?garmin=error');
-  }
-
-  try {
-    const requestData = {
-      url: config.garmin.accessTokenUrl,
-      method: 'POST',
-      data: { oauth_verifier }
-    };
-
-    const token = {
-      key: oauth_token,
-      secret: oauthTokenSecret
-    };
-
-    const authHeader = oauth.toHeader(oauth.authorize(requestData, token));
-
-    const response = await axios.post(
-      config.garmin.accessTokenUrl,
-      `oauth_verifier=${oauth_verifier}`,
-      { headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const params = new URLSearchParams(response.data);
-    const accessToken = params.get('oauth_token');
-    const accessTokenSecret = params.get('oauth_token_secret');
-
-    const db = loadDB();
-    db.tokens.garmin = {
-      accessToken,
-      accessTokenSecret
-    };
-    saveDB(db);
-
-    delete garminTempTokens[oauth_token];
-
-    res.redirect('/?garmin=connected');
-  } catch (error) {
-    console.error('Erreur Garmin callback:', error.message);
-    res.redirect('/?garmin=error');
-  }
-});
-
-// Synchroniser les données de sommeil Garmin
-app.post('/api/sync/garmin', async (req, res) => {
-  try {
-    const db = loadDB();
-    const tokens = db.tokens.garmin;
-
-    if (!tokens) {
-      return res.status(401).json({ success: false, error: 'Garmin non connecté' });
+    console.error('❌ Erreur sync Strava:', error.message);
+    if (error.response) {
+      console.error('   Status:', error.response.status);
+      console.error('   Data:', error.response.data);
     }
-
-    // Récupérer les 30 derniers jours
-    const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-    const requestData = {
-      url: `${config.garmin.apiBaseUrl}/dailies`,
-      method: 'GET',
-      params: {
-        uploadStartTimeInSeconds: Math.floor(new Date(startDate).getTime() / 1000),
-        uploadEndTimeInSeconds: Math.floor(new Date(endDate).getTime() / 1000)
-      }
-    };
-
-    const token = {
-      key: tokens.accessToken,
-      secret: tokens.accessTokenSecret
-    };
-
-    const authHeader = oauth.toHeader(oauth.authorize(requestData, token));
-
-    const response = await axios.get(requestData.url, {
-      headers: authHeader,
-      params: requestData.params
+    
+    // Si erreur 401, le token est invalide
+    if (error.response?.status === 401) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Token Strava invalide. Veuillez reconnecter votre compte.',
+        needsAuth: true
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.response?.data 
     });
+  }
+});
 
-    // Parser les données de sommeil
-    const sleepData = response.data.map(day => ({
-      date: day.calendarDate,
-      duration: day.sleepTimeInSeconds / 60, // en minutes
-      quality: day.sleepScores?.overall?.value || 0,
-      deepSleep: day.deepSleepSeconds / 60,
-      lightSleep: day.lightSleepSeconds / 60,
-      remSleep: day.remSleepSeconds / 60,
-      awake: day.awakeSleepSeconds / 60,
-      hrv: day.averageStressLevel,
-      restingHR: day.restingHeartRate
-    }));
+// ===== GARMIN API =====
 
+let garminClient = null;
+
+function getGarminClient() {
+  if (!garminClient) {
+    garminClient = new GarminConnect({
+      username: config.garmin.email,
+      password: config.garmin.password
+    });
+  }
+  return garminClient;
+}
+
+app.get('/api/garmin/status', async (req, res) => {
+  try {
+    const client = getGarminClient();
+    await client.login();
+    res.json({ connected: true });
+  } catch (error) {
+    res.json({ connected: false, error: error.message });
+  }
+});
+
+// Fonction helper pour extraire les données de sommeil
+function extractSleepData(sleepData, dateStr) {
+  if (!sleepData || !sleepData.dailySleepDTO) {
+    return null;
+  }
+
+  const sleep = sleepData.dailySleepDTO;
+  
+  // Vérifier que sleepTimeSeconds existe et est un nombre
+  if (typeof sleep.sleepTimeSeconds !== 'number') {
+    console.log(`⚠️ Pas de sleepTimeSeconds valide pour ${dateStr}`);
+    return null;
+  }
+
+  return {
+    date: dateStr,
+    duration: Math.round(sleep.sleepTimeSeconds / 60), // en minutes
+    quality: sleep.sleepScores?.overall?.value || 0,
+    deepSleep: Math.round((sleep.deepSleepSeconds || 0) / 60),
+    lightSleep: Math.round((sleep.lightSleepSeconds || 0) / 60),
+    remSleep: Math.round((sleep.remSleepSeconds || 0) / 60),
+    awake: Math.round((sleep.awakeSleepSeconds || 0) / 60),
+    hrv: sleepData.avgOvernightHrv || null,
+    restingHR: sleepData.restingHeartRate || null
+  };
+}
+
+app.post('/api/sync/garmin', async (req, res) => {
+  console.log('📥 Début synchronisation Garmin...');
+  
+  try {
+    const client = getGarminClient();
+    await client.login();
+    console.log('✓ Connecté à Garmin');
+    
+    // Récupérer les 30 derniers jours de sommeil
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+    
+    const sleepDataArray = [];
+    let successCount = 0;
+    let failCount = 0;
+    
+    // Parcourir chaque jour
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      
+      try {
+        // IMPORTANT: Passer un objet Date, pas une string !
+        const dateObj = new Date(dateStr + 'T12:00:00Z');
+        const sleepData = await client.getSleepData(dateObj);
+        
+        const extracted = extractSleepData(sleepData, dateStr);
+        
+        if (extracted) {
+          sleepDataArray.push(extracted);
+          successCount++;
+          console.log(`✓ ${dateStr}: ${Math.round(extracted.duration/60)}h de sommeil`);
+        } else {
+          failCount++;
+          console.log(`⚠️ ${dateStr}: Pas de données valides`);
+        }
+      } catch (err) {
+        failCount++;
+        console.log(`⚠️ ${dateStr}: ${err.message}`);
+      }
+    }
+    
+    console.log(`\n📊 Résumé: ${successCount} jours récupérés, ${failCount} échecs`);
+    
+    // Sauvegarder dans la base de données
+    const db = loadDB();
     const existingDates = new Set(db.sleepData.map(s => s.date));
-    const newSleep = sleepData.filter(s => !existingDates.has(s.date));
+    const newSleep = sleepDataArray.filter(s => !existingDates.has(s.date));
     
     db.sleepData = [...db.sleepData, ...newSleep].sort((a, b) => 
       new Date(b.date) - new Date(a.date)
     );
     saveDB(db);
-
+    
+    console.log(`✓ ${newSleep.length} nouvelles nuits ajoutées`);
+    console.log(`✓ Total: ${db.sleepData.length} nuits`);
+    
     res.json({ 
       success: true, 
       newNights: newSleep.length,
-      totalNights: db.sleepData.length 
+      totalNights: db.sleepData.length,
+      daysScanned: successCount + failCount,
+      daysFound: successCount
     });
+    
   } catch (error) {
-    console.error('Erreur sync Garmin:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Erreur sync Garmin:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
 // ===== ENDPOINTS API =====
 
-// Récupérer toutes les activités
 app.get('/api/activities', (req, res) => {
   const db = loadDB();
-  res.json(db.activities);
+  console.log(`📤 Envoi de ${db.activities.length} activités`);
+  res.json(db.activities || []);
 });
 
-// Récupérer toutes les données de sommeil
 app.get('/api/sleep', (req, res) => {
   const db = loadDB();
-  res.json(db.sleepData);
+  console.log(`📤 Envoi de ${db.sleepData.length} nuits`);
+  res.json(db.sleepData || []);
 });
 
-// Statut des connexions
 app.get('/api/status', (req, res) => {
   const db = loadDB();
+  
+  const stravaConfigured = !!db.tokens.strava || !!config.strava.refreshToken;
+  
+  console.log('📊 Status check:', {
+    strava: stravaConfigured,
+    garmin: !!(config.garmin.email && config.garmin.password),
+    activitiesCount: db.activities.length,
+    sleepCount: db.sleepData.length
+  });
+  
   res.json({
-    strava: !!db.tokens.strava,
-    garmin: !!db.tokens.garmin,
+    strava: stravaConfigured,
+    garmin: !!config.garmin.email && !!config.garmin.password,
     activitiesCount: db.activities.length,
     sleepCount: db.sleepData.length
   });
 });
 
-// Déconnecter Strava
 app.post('/api/disconnect/strava', (req, res) => {
   const db = loadDB();
   delete db.tokens.strava;
@@ -358,7 +402,6 @@ app.post('/api/disconnect/strava', (req, res) => {
   res.json({ success: true });
 });
 
-// Déconnecter Garmin
 app.post('/api/disconnect/garmin', (req, res) => {
   const db = loadDB();
   delete db.tokens.garmin;
@@ -366,7 +409,7 @@ app.post('/api/disconnect/garmin', (req, res) => {
   res.json({ success: true });
 });
 
-// ===== CRON JOBS (synchronisation automatique) =====
+// ===== CRON JOBS =====
 const cron = require('node-cron');
 
 // Synchroniser Strava toutes les heures
@@ -374,8 +417,50 @@ cron.schedule('0 * * * *', async () => {
   console.log('🔄 Synchronisation automatique Strava...');
   try {
     const token = await getValidStravaToken();
-    // Logique de sync identique à /api/sync/strava
-    console.log('✅ Strava synchronisé');
+    const after = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
+    const response = await axios.get(
+      `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=200`,
+      { headers: { 'Authorization': `Bearer ${token}` } }
+    );
+    
+    const activities = response.data.map(act => {
+      let activityType = 'run';
+      if (act.type === 'Ride' || act.type === 'VirtualRide' || act.type === 'EBikeRide') {
+        activityType = 'bike';
+      } else if (act.type === 'Run' || act.type === 'VirtualRun') {
+        activityType = 'run';
+      } else if (act.type === 'Swim') {
+        activityType = 'swim';
+      }
+      
+      return {
+        id: act.id,
+        name: act.name,
+        type: activityType,
+        date: act.start_date.split('T')[0],
+        duration: Math.round(act.moving_time / 60),
+        distance: act.distance / 1000,
+        avgHR: act.average_heartrate,
+        maxHR: act.max_heartrate,
+        elevation: act.total_elevation_gain,
+        tss: act.suffer_score,
+        source: 'Strava'
+      };
+    });
+
+    const db = loadDB();
+    const existingIds = new Set(db.activities.map(a => a.id));
+    const newActivities = activities.filter(a => !existingIds.has(a.id));
+    
+    if (newActivities.length > 0) {
+      db.activities = [...db.activities, ...newActivities].sort((a, b) => 
+        new Date(b.date) - new Date(a.date)
+      );
+      saveDB(db);
+      console.log(`✅ Strava synchronisé: ${newActivities.length} nouvelles activités`);
+    } else {
+      console.log('✅ Strava synchronisé: aucune nouvelle activité');
+    }
   } catch (error) {
     console.error('❌ Erreur sync auto Strava:', error.message);
   }
@@ -385,8 +470,33 @@ cron.schedule('0 * * * *', async () => {
 cron.schedule('0 7 * * *', async () => {
   console.log('🔄 Synchronisation automatique Garmin...');
   try {
-    // Logique de sync identique à /api/sync/garmin
-    console.log('✅ Garmin synchronisé');
+    const client = getGarminClient();
+    await client.login();
+    
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const dateStr = yesterday.toISOString().split('T')[0];
+    
+    // IMPORTANT: Passer un objet Date, pas une string !
+    const dateObj = new Date(dateStr + 'T12:00:00Z');
+    const sleepData = await client.getSleepData(dateObj);
+    const extracted = extractSleepData(sleepData, dateStr);
+    
+    if (extracted) {
+      const db = loadDB();
+      
+      // Ajouter si pas déjà présent
+      if (!db.sleepData.find(s => s.date === dateStr)) {
+        db.sleepData.push(extracted);
+        db.sleepData.sort((a, b) => new Date(b.date) - new Date(a.date));
+        saveDB(db);
+        console.log(`✅ Garmin synchronisé: ${Math.round(extracted.duration/60)}h de sommeil`);
+      } else {
+        console.log('✅ Garmin synchronisé: données déjà présentes');
+      }
+    } else {
+      console.log('⚠️ Garmin: pas de données de sommeil pour hier');
+    }
   } catch (error) {
     console.error('❌ Erreur sync auto Garmin:', error.message);
   }
@@ -397,5 +507,4 @@ app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur http://localhost:${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
   console.log(`🔗 Strava auth: http://localhost:${PORT}/auth/strava`);
-  console.log(`🔗 Garmin auth: http://localhost:${PORT}/auth/garmin`);
 });
