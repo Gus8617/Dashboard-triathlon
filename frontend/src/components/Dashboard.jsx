@@ -13,6 +13,7 @@ export default function Dashboard() {
   const [sportStats, setSportStats] = useState({ run: {}, bike: {}, swim: {} });
   const [trendData, setTrendData] = useState([]);
   const [recoveryScore, setRecoveryScore] = useState(0);
+  const [showSetup, setShowSetup] = useState(false);
 
   useEffect(() => {
     checkStatus();
@@ -210,39 +211,65 @@ export default function Dashboard() {
   };
 
   const calculateTrendData = () => {
+    if (activities.length === 0) return;
+    
     const trend = [];
     const today = new Date();
     
+    // Trier les activités par date
+    const sortedActivities = [...activities].sort((a, b) => 
+      new Date(a.date) - new Date(b.date)
+    );
+    
+    // Grouper par jour
+    const dailyTSS = {};
+    sortedActivities.forEach(act => {
+      const date = act.date;
+      if (!dailyTSS[date]) dailyTSS[date] = 0;
+      dailyTSS[date] += (act.tss || estimateTSS(act));
+    });
+    
+    // Calculer ATL/CTL pour chaque semaine des 12 dernières semaines
     for (let week = 11; week >= 0; week--) {
-      const weekStart = new Date(today);
-      weekStart.setDate(weekStart.getDate() - (week * 7));
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
+      const weekEnd = new Date(today);
+      weekEnd.setDate(weekEnd.getDate() - (week * 7));
+      const weekEndStr = weekEnd.toISOString().split('T')[0];
       
-      const weekActivities = activities.filter(a => {
-        const actDate = new Date(a.date);
-        return actDate >= weekStart && actDate <= weekEnd;
-      });
+      // Calculer ATL et CTL jusqu'à cette date avec EWMA
+      let atl = 0;
+      let ctl = 0;
+      const atlDecay = 1 - (1 / 7);
+      const ctlDecay = 1 - (1 / 42);
       
-      const weekTSS = weekActivities.reduce((sum, a) => sum + (a.tss || estimateTSS(a)), 0);
-      const atl = weekTSS / 7;
+      const firstDate = sortedActivities[0].date;
+      const startDate = new Date(firstDate);
       
-      // CTL = moyenne mobile sur 6 semaines précédentes
-      const ctlActivities = activities.filter(a => {
-        const actDate = new Date(a.date);
-        const weeksAgo = Math.floor((today - actDate) / (1000 * 60 * 60 * 24 * 7));
-        return weeksAgo >= week && weeksAgo < week + 6;
-      });
-      const ctl = ctlActivities.reduce((sum, a) => sum + (a.tss || estimateTSS(a)), 0) / 42;
+      for (let d = new Date(startDate); d <= weekEnd; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        const tssToday = dailyTSS[dateStr] || 0;
+        
+        atl = (atl * atlDecay) + (tssToday * (1 / 7));
+        ctl = (ctl * ctlDecay) + (tssToday * (1 / 42));
+      }
       
       const tsb = ctl - atl;
       
+      // Charge de la semaine
+      const weekStart = new Date(weekEnd);
+      weekStart.setDate(weekStart.getDate() - 6);
+      let weekLoad = 0;
+      
+      for (let d = new Date(weekStart); d <= weekEnd; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        weekLoad += dailyTSS[dateStr] || 0;
+      }
+      
       trend.push({
-        week: `S-${week}`,
+        week: week === 0 ? 'Aujourd\'hui' : `S-${week}`,
         atl: Math.round(atl),
         ctl: Math.round(ctl),
         tsb: Math.round(tsb),
-        load: Math.round(weekTSS)
+        load: Math.round(weekLoad)
       });
     }
     
@@ -299,25 +326,67 @@ export default function Dashboard() {
   };
 
   const calculateMetrics = () => {
-    const today = new Date();
-    const last7Days = activities.filter(a => {
-      const actDate = new Date(a.date);
-      const diff = (today - actDate) / (1000 * 60 * 60 * 24);
-      return diff <= 7;
+    if (activities.length === 0) return;
+    
+    // Trier les activités par date (plus ancien au plus récent)
+    const sortedActivities = [...activities].sort((a, b) => 
+      new Date(a.date) - new Date(b.date)
+    );
+    
+    // Initialiser ATL et CTL
+    let atl = 0;
+    let ctl = 0;
+    
+    // Constantes de temps
+    const ATL_TAU = 7;   // 7 jours pour ATL
+    const CTL_TAU = 42;  // 42 jours pour CTL
+    
+    // Facteurs de décroissance exponentielle
+    const atlDecay = 1 - (1 / ATL_TAU);
+    const ctlDecay = 1 - (1 / CTL_TAU);
+    
+    // Grouper les activités par jour
+    const dailyTSS = {};
+    sortedActivities.forEach(act => {
+      const date = act.date;
+      if (!dailyTSS[date]) dailyTSS[date] = 0;
+      dailyTSS[date] += (act.tss || estimateTSS(act));
     });
     
-    const last42Days = activities.filter(a => {
-      const actDate = new Date(a.date);
-      const diff = (today - actDate) / (1000 * 60 * 60 * 24);
-      return diff <= 42;
-    });
-
-    const weeklyTSS = last7Days.reduce((sum, a) => sum + (a.tss || estimateTSS(a)), 0);
-    const atl = weeklyTSS / 7;
-    const ctl = last42Days.reduce((sum, a) => sum + (a.tss || estimateTSS(a)), 0) / 42;
+    // Calculer ATL et CTL jour par jour avec EWMA
+    const today = new Date().toISOString().split('T')[0];
+    const firstDate = sortedActivities[0].date;
+    const startDate = new Date(firstDate);
+    const endDate = new Date(today);
+    
+    // Parcourir chaque jour depuis la première activité jusqu'à aujourd'hui
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      const tssToday = dailyTSS[dateStr] || 0;
+      
+      // Formule EWMA
+      atl = (atl * atlDecay) + (tssToday * (1 / ATL_TAU));
+      ctl = (ctl * ctlDecay) + (tssToday * (1 / CTL_TAU));
+    }
+    
+    // TSB = Yesterday's CTL - Yesterday's ATL (selon la formule officielle)
+    // Mais pour simplifier, on utilise les valeurs d'aujourd'hui
     const tsb = ctl - atl;
+    
+    // Charge hebdomadaire (somme des 7 derniers jours)
+    const last7Days = activities.filter(a => {
+      const actDate = new Date(a.date);
+      const diff = (new Date() - actDate) / (1000 * 60 * 60 * 24);
+      return diff <= 7;
+    });
+    const weeklyTSS = last7Days.reduce((sum, a) => sum + (a.tss || estimateTSS(a)), 0);
 
-    setMetrics({ atl: Math.round(atl), ctl: Math.round(ctl), tsb: Math.round(tsb), weeklyLoad: Math.round(weeklyTSS) });
+    setMetrics({ 
+      atl: Math.round(atl), 
+      ctl: Math.round(ctl), 
+      tsb: Math.round(tsb), 
+      weeklyLoad: Math.round(weeklyTSS) 
+    });
   };
 
   const analyzeTrainingZones = () => {
@@ -543,12 +612,134 @@ export default function Dashboard() {
   const trainingState = getTrainingState();
   const zoneDistribution = getZoneDistribution();
 
+  // Modal de configuration
+  if (showSetup) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6 flex items-center justify-center">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-2xl p-8">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">🏊 Configuration Dashboard</h1>
+          <p className="text-gray-600 mb-8">Connectez vos comptes pour commencer</p>
+
+          {/* Strava */}
+          <div className="border-2 border-orange-200 rounded-xl p-6 mb-6 bg-orange-50">
+            <div className="flex items-center gap-3 mb-4">
+              <Activity className="text-orange-500" size={32} />
+              <div>
+                <h2 className="text-xl font-bold text-gray-800">Strava</h2>
+                <p className="text-sm text-gray-600">Pour vos activités sportives</p>
+              </div>
+            </div>
+            
+            {status.strava ? (
+              <div className="flex items-center gap-2 text-green-600">
+                <CheckCircle size={20} />
+                <span className="font-semibold">✅ Connecté ({status.activitiesCount} activités)</span>
+              </div>
+            ) : (
+              <>
+                <div className="bg-white rounded-lg p-4 mb-4 text-sm space-y-2">
+                  <p className="font-semibold">📋 Étapes :</p>
+                  <ol className="list-decimal list-inside space-y-1 text-gray-700">
+                    <li>Créez une app sur <a href="https://www.strava.com/settings/api" target="_blank" className="text-blue-600 underline">strava.com/settings/api</a></li>
+                    <li>Authorization Callback Domain : <code className="bg-gray-100 px-2 py-1 rounded">localhost</code></li>
+                    <li>Copiez Client ID et Client Secret dans votre fichier .env</li>
+                    <li>Cliquez sur "Connecter" ci-dessous</li>
+                  </ol>
+                </div>
+                <button
+                  onClick={() => window.location.href = '/auth/strava'}
+                  className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-3 px-6 rounded-lg transition"
+                >
+                  🔗 Connecter Strava
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Garmin */}
+          <div className="border-2 border-blue-200 rounded-xl p-6 mb-6 bg-blue-50">
+            <div className="flex items-center gap-3 mb-4">
+              <Cloud className="text-blue-500" size={32} />
+              <div>
+                <h2 className="text-xl font-bold text-gray-800">Garmin Connect</h2>
+                <p className="text-sm text-gray-600">Pour le sommeil et la récupération</p>
+              </div>
+            </div>
+            
+            {status.garmin ? (
+              <div className="flex items-center gap-2 text-green-600">
+                <CheckCircle size={20} />
+                <span className="font-semibold">✅ Connecté ({status.sleepCount} nuits)</span>
+              </div>
+            ) : (
+              <div className="bg-white rounded-lg p-4 text-sm space-y-3">
+                <p className="font-semibold">📋 Configuration :</p>
+                <p className="text-gray-700">Ajoutez vos identifiants Garmin dans le fichier <code className="bg-gray-100 px-2 py-1 rounded">.env</code> :</p>
+                <pre className="bg-gray-800 text-green-400 p-3 rounded text-xs overflow-x-auto">
+{`GARMIN_EMAIL=votre@email.com
+GARMIN_PASSWORD=votre_mot_de_passe`}
+                </pre>
+                <p className="text-gray-600 text-xs">⚠️ Redémarrez le serveur après modification du .env</p>
+              </div>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-4">
+            <button
+              onClick={() => {
+                checkStatus();
+                if (status.strava || status.garmin) {
+                  setShowSetup(false);
+                }
+              }}
+              className="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-semibold py-3 px-6 rounded-lg transition"
+            >
+              🔄 Vérifier la connexion
+            </button>
+            {(status.strava || status.garmin) && (
+              <button
+                onClick={() => setShowSetup(false)}
+                className="flex-1 bg-green-500 hover:bg-green-600 text-white font-semibold py-3 px-6 rounded-lg transition"
+              >
+                ✅ Continuer
+              </button>
+            )}
+          </div>
+
+          {(!status.strava && !status.garmin) && (
+            <div className="mt-4 text-center">
+              <button
+                onClick={() => setShowSetup(false)}
+                className="text-gray-500 hover:text-gray-700 text-sm underline"
+              >
+                Passer pour l'instant
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">🏊 Dashboard Triathlon Pro</h1>
-          <p className="text-gray-600">Coaching intelligent • Analyse complète • Progression optimale</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">🏊 Dashboard Triathlon Pro</h1>
+              <p className="text-gray-600">Coaching intelligent • Analyse complète • Progression optimale</p>
+            </div>
+            <button
+              onClick={() => setShowSetup(true)}
+              className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
+              title="Configuration des connexions"
+            >
+              <Activity size={18} />
+              Config
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -635,8 +826,8 @@ export default function Dashboard() {
               <h3 className="font-semibold text-gray-700 text-sm">ATL (7j)</h3>
             </div>
             <p className="text-3xl font-bold text-gray-800">{metrics.atl}</p>
-            <p className="text-xs text-gray-500 mb-2">Charge aiguë</p>
-            <p className="text-xs text-gray-600 leading-tight">Fatigue accumulée sur 7 jours. Augmente vite avec l'entraînement.</p>
+            <p className="text-xs text-gray-500 mb-2">Charge aiguë • EWMA</p>
+            <p className="text-xs text-gray-600 leading-tight">Fatigue récente (7 jours glissants). Calcul exponentiel donnant plus de poids aux jours récents.</p>
           </div>
 
           <div className="bg-white rounded-lg shadow-lg p-4 hover:shadow-xl transition">
@@ -645,8 +836,8 @@ export default function Dashboard() {
               <h3 className="font-semibold text-gray-700 text-sm">CTL (42j)</h3>
             </div>
             <p className="text-3xl font-bold text-gray-800">{metrics.ctl}</p>
-            <p className="text-xs text-gray-500 mb-2">Charge chronique</p>
-            <p className="text-xs text-gray-600 leading-tight">Forme/fitness accumulé sur 6 semaines. Plus c'est haut, meilleure est votre forme.</p>
+            <p className="text-xs text-gray-500 mb-2">Charge chronique • EWMA</p>
+            <p className="text-xs text-gray-600 leading-tight">Fitness de fond (42 jours glissants). Plus c'est élevé, meilleure est votre forme générale.</p>
           </div>
 
           <div className={`rounded-lg shadow-lg p-4 hover:shadow-xl transition ${getTSBColor(metrics.tsb)}`}>
@@ -679,9 +870,14 @@ export default function Dashboard() {
         {/* Sport Stats (30 derniers jours) */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow-lg p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-3xl">🏃</span>
-              <h3 className="font-bold text-lg">Course à pied</h3>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-3xl">🏃</span>
+                <h3 className="font-bold text-lg">Course à pied</h3>
+              </div>
+              <div className="bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-sm font-bold">
+                {sportStats.run.count > 0 ? Math.round((sportStats.run.duration / (sportStats.run.duration + sportStats.bike.duration + sportStats.swim.duration)) * 100) : 0}%
+              </div>
             </div>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
@@ -710,9 +906,14 @@ export default function Dashboard() {
           </div>
 
           <div className="bg-white rounded-lg shadow-lg p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-3xl">🚴</span>
-              <h3 className="font-bold text-lg">Vélo</h3>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-3xl">🚴</span>
+                <h3 className="font-bold text-lg">Vélo</h3>
+              </div>
+              <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
+                {sportStats.bike.count > 0 ? Math.round((sportStats.bike.duration / (sportStats.run.duration + sportStats.bike.duration + sportStats.swim.duration)) * 100) : 0}%
+              </div>
             </div>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
@@ -741,9 +942,14 @@ export default function Dashboard() {
           </div>
 
           <div className="bg-white rounded-lg shadow-lg p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-3xl">🏊</span>
-              <h3 className="font-bold text-lg">Natation</h3>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-3xl">🏊</span>
+                <h3 className="font-bold text-lg">Natation</h3>
+              </div>
+              <div className="bg-cyan-100 text-cyan-800 px-3 py-1 rounded-full text-sm font-bold">
+                {sportStats.swim.count > 0 ? Math.round((sportStats.swim.duration / (sportStats.run.duration + sportStats.bike.duration + sportStats.swim.duration)) * 100) : 0}%
+              </div>
             </div>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
@@ -771,7 +977,8 @@ export default function Dashboard() {
         {/* Trend 12 semaines + Zones */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Tendance 12 semaines (ATL/CTL/TSB)</h3>
+            <h3 className="text-lg font-bold mb-2">Tendance 12 semaines (ATL/CTL/TSB)</h3>
+            <p className="text-xs text-gray-500 mb-4">Zone verte = forme optimale • Zone rouge = fatigue</p>
             <ResponsiveContainer width="100%" height={250}>
               <LineChart data={trendData}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -779,19 +986,49 @@ export default function Dashboard() {
                 <YAxis />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="atl" stroke="#f59e0b" strokeWidth={2} name="ATL" />
-                <Line type="monotone" dataKey="ctl" stroke="#3b82f6" strokeWidth={2} name="CTL" />
-                <Line type="monotone" dataKey="tsb" stroke="#10b981" strokeWidth={2} name="TSB" />
+                {/* Zones optimales pour TSB */}
+                <defs>
+                  <linearGradient id="optimalZone" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.2}/>
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.1}/>
+                  </linearGradient>
+                  <linearGradient id="fatigueZone" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#ef4444" stopOpacity={0.2}/>
+                    <stop offset="100%" stopColor="#ef4444" stopOpacity={0.1}/>
+                  </linearGradient>
+                </defs>
+                {/* Zone rouge (fatigue) : TSB < -10 */}
+                <Area type="monotone" dataKey={() => -10} fill="url(#fatigueZone)" stroke="none" />
+                {/* Zone verte (optimal) : TSB entre -5 et +5 */}
+                <Area type="monotone" dataKey={() => 5} fill="url(#optimalZone)" stroke="none" />
+                <Line type="monotone" dataKey="atl" stroke="#f59e0b" strokeWidth={2} name="ATL (7j)" dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="ctl" stroke="#3b82f6" strokeWidth={2} name="CTL (42j)" dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="tsb" stroke="#10b981" strokeWidth={3} name="TSB" dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-red-50 p-2 rounded">
+                <p className="font-semibold text-red-700">TSB &lt; -10</p>
+                <p className="text-red-600">Fatigue</p>
+              </div>
+              <div className="bg-green-50 p-2 rounded">
+                <p className="font-semibold text-green-700">TSB -5 à +5</p>
+                <p className="text-green-600">Optimal</p>
+              </div>
+              <div className="bg-blue-50 p-2 rounded">
+                <p className="font-semibold text-blue-700">TSB &gt; +10</p>
+                <p className="text-blue-600">Repos</p>
+              </div>
+            </div>
           </div>
 
           {zoneDistribution.length > 0 && (
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <h3 className="text-lg font-bold mb-2 flex items-center gap-2">
                 <Target className="text-indigo-600" />
                 Zones cardiaques (14j)
               </h3>
+              <p className="text-xs text-gray-500 mb-4">Objectif : 70-80% en Z2 pour l'endurance</p>
               <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
                   <Pie
@@ -813,11 +1050,20 @@ export default function Dashboard() {
               </ResponsiveContainer>
               <div className="mt-4 space-y-1 text-xs">
                 {zoneDistribution.map((zone, idx) => (
-                  <div key={idx} className="flex justify-between">
+                  <div key={idx} className="flex justify-between items-center">
                     <span style={{ color: zone.color }} className="font-semibold">{zone.name}</span>
-                    <span>{formatDuration(zone.minutes)} ({zone.value}%)</span>
+                    <div className="flex items-center gap-2">
+                      <span>{formatDuration(zone.minutes)}</span>
+                      <span className="bg-gray-100 px-2 py-1 rounded font-bold">{zone.value}%</span>
+                    </div>
                   </div>
                 ))}
+              </div>
+              <div className="mt-4 pt-3 border-t text-xs">
+                <p className="font-semibold mb-1">💡 Guide :</p>
+                <p className="text-gray-600">• Z1-Z2 : Base endurance (70-80% du volume)</p>
+                <p className="text-gray-600">• Z3 : Tempo (10-15%)</p>
+                <p className="text-gray-600">• Z4-Z5 : Intensité (10-15%)</p>
               </div>
             </div>
           )}
@@ -848,60 +1094,133 @@ export default function Dashboard() {
         {/* Charts HRV et FC repos */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">HRV (Variabilité cardiaque) - 30j</h3>
+            <h3 className="text-lg font-bold mb-2">HRV (Variabilité cardiaque) - 30j</h3>
+            <p className="text-xs text-gray-500 mb-4">Zone verte = bonne récupération (HRV &gt; 50ms)</p>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis />
+                <YAxis domain={[0, 100]} />
                 <Tooltip />
-                <Line type="monotone" dataKey="hrv" stroke="#8b5cf6" strokeWidth={2} name="HRV (ms)" connectNulls />
+                {/* Zone optimale HRV > 50 */}
+                <defs>
+                  <linearGradient id="hrvOptimal" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.3}/>
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.1}/>
+                  </linearGradient>
+                </defs>
+                {/* Zone verte au-dessus de 50ms */}
+                <Area type="monotone" dataKey={() => 50} fill="url(#hrvOptimal)" stroke="none" />
+                <Line type="monotone" dataKey="hrv" stroke="#8b5cf6" strokeWidth={3} name="HRV (ms)" connectNulls dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
-            <p className="text-xs text-gray-500 mt-2">HRV élevée = bonne récupération • HRV en baisse = fatigue</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="bg-green-50 p-2 rounded">
+                <p className="font-semibold text-green-700">HRV &gt; 50ms</p>
+                <p className="text-green-600">Bonne récupération</p>
+              </div>
+              <div className="bg-yellow-50 p-2 rounded">
+                <p className="font-semibold text-yellow-700">HRV &lt; 50ms</p>
+                <p className="text-yellow-600">Fatigue possible</p>
+              </div>
+            </div>
           </div>
 
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">FC au repos - 30j</h3>
+            <h3 className="text-lg font-bold mb-2">FC au repos - 30j</h3>
+            <p className="text-xs text-gray-500 mb-4">FC stable ou en baisse = bonne récupération</p>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                 <YAxis domain={[40, 80]} />
                 <Tooltip />
-                <Line type="monotone" dataKey="restingHR" stroke="#ef4444" strokeWidth={2} name="FC repos (bpm)" connectNulls />
+                <Line type="monotone" dataKey="restingHR" stroke="#ef4444" strokeWidth={3} name="FC repos (bpm)" connectNulls dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
-            <p className="text-xs text-gray-500 mt-2">FC repos qui augmente = signe de fatigue ou surentraînement</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="bg-green-50 p-2 rounded">
+                <p className="font-semibold text-green-700">FC stable/baisse</p>
+                <p className="text-green-600">Récupération OK</p>
+              </div>
+              <div className="bg-red-50 p-2 rounded">
+                <p className="font-semibold text-red-700">FC en hausse</p>
+                <p className="text-red-600">Fatigue/maladie</p>
+              </div>
+            </div>
           </div>
         </div>
 
         {/* Charge et Sommeil */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Charge d'entraînement (30j)</h3>
+            <h3 className="text-lg font-bold mb-2">Charge d'entraînement (30j)</h3>
+            <p className="text-xs text-gray-500 mb-4">Zone verte = charge optimale (50-150 TSS/jour)</p>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                 <YAxis />
                 <Tooltip />
+                {/* Zone optimale 50-150 TSS */}
+                <defs>
+                  <linearGradient id="optimalLoad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.2}/>
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.1}/>
+                  </linearGradient>
+                </defs>
                 <Bar dataKey="tss" fill="#8b5cf6" name="TSS" />
               </BarChart>
             </ResponsiveContainer>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-blue-50 p-2 rounded">
+                <p className="font-semibold text-blue-700">&lt; 50 TSS</p>
+                <p className="text-blue-600">Repos/Récup</p>
+              </div>
+              <div className="bg-green-50 p-2 rounded">
+                <p className="font-semibold text-green-700">50-150 TSS</p>
+                <p className="text-green-600">Optimal</p>
+              </div>
+              <div className="bg-orange-50 p-2 rounded">
+                <p className="font-semibold text-orange-700">&gt; 150 TSS</p>
+                <p className="text-orange-600">Intense</p>
+              </div>
+            </div>
           </div>
 
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Sommeil (30j)</h3>
+            <h3 className="text-lg font-bold mb-2">Sommeil (30j)</h3>
+            <p className="text-xs text-gray-500 mb-4">Zone verte = sommeil optimal (7-9h)</p>
             <ResponsiveContainer width="100%" height={200}>
               <AreaChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                 <YAxis domain={[0, 10]} />
                 <Tooltip />
+                {/* Zone optimale 7-9h */}
+                <defs>
+                  <linearGradient id="optimalSleep" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.4}/>
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.2}/>
+                  </linearGradient>
+                </defs>
                 <Area type="monotone" dataKey="sleep" stroke="#3b82f6" fill="#93c5fd" name="Heures" />
               </AreaChart>
             </ResponsiveContainer>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-red-50 p-2 rounded">
+                <p className="font-semibold text-red-700">&lt; 6h</p>
+                <p className="text-red-600">Insuffisant</p>
+              </div>
+              <div className="bg-green-50 p-2 rounded">
+                <p className="font-semibold text-green-700">7-9h</p>
+                <p className="text-green-600">Optimal</p>
+              </div>
+              <div className="bg-blue-50 p-2 rounded">
+                <p className="font-semibold text-blue-700">&gt; 9h</p>
+                <p className="text-blue-600">Récupération</p>
+              </div>
+            </div>
           </div>
         </div>
 
