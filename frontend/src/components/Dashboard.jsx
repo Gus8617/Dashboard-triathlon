@@ -6,7 +6,7 @@ export default function Dashboard() {
   const [activities, setActivities] = useState([]);
   const [sleepData, setSleepData] = useState([]);
   const [status, setStatus] = useState({ strava: false, garmin: false });
-  const [syncing, setSyncing] = useState({ strava: false, garmin: false });
+  const [syncing, setSyncing] = useState({ strava: false, garmin: false, telegram: false });
   const [error, setError] = useState(null);
   const [metrics, setMetrics] = useState({ atl: 0, ctl: 0, tsb: 0, weeklyLoad: 0 });
   const [trainingZones, setTrainingZones] = useState({ z1: 0, z2: 0, z3: 0, z4: 0, z5: 0 });
@@ -136,6 +136,32 @@ export default function Dashboard() {
       setError('Erreur: ' + error.message);
     } finally {
       setSyncing(prev => ({ ...prev, garmin: false }));
+    }
+  };
+
+  const sendTelegramReport = async () => {
+    setSyncing(prev => ({ ...prev, telegram: true }));
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/telegram/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        alert('✅ Rapport envoyé sur Telegram !');
+      } else {
+        setError(data.error || 'Erreur envoi Telegram');
+        alert('❌ ' + (data.error || 'Erreur envoi Telegram'));
+      }
+    } catch (error) {
+      setError('Erreur: ' + error.message);
+      alert('❌ Erreur: ' + error.message);
+    } finally {
+      setSyncing(prev => ({ ...prev, telegram: false }));
     }
   };
 
@@ -738,27 +764,36 @@ GARMIN_PASSWORD=votre_mot_de_passe`}
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
         <div className="mb-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
             <div>
-              <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">🏊 Dashboard Triathlon Pro</h1>
-              <p className="text-gray-600">Coaching intelligent • Analyse complète • Progression optimale</p>
+              <h1 className="text-2xl md:text-4xl font-bold text-gray-800 mb-2">🏊 Dashboard Triathlon Pro</h1>
+              <p className="text-sm md:text-base text-gray-600">Coaching intelligent • Analyse complète • Progression optimale</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => setShowCalendar(true)}
-                className="bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
+                className="bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-3 md:px-4 rounded-lg transition flex items-center gap-2 text-sm md:text-base"
                 title="Vue agenda"
               >
-                <Calendar size={18} />
-                Agenda
+                <Calendar size={16} className="md:w-5 md:h-5" />
+                <span className="hidden sm:inline">Agenda</span>
+              </button>
+              <button
+                onClick={sendTelegramReport}
+                disabled={syncing.telegram}
+                className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white font-semibold py-2 px-3 md:px-4 rounded-lg transition flex items-center gap-2 text-sm md:text-base"
+                title="Envoyer rapport Telegram"
+              >
+                <Activity size={16} className="md:w-5 md:h-5" />
+                <span className="hidden sm:inline">Telegram</span>
               </button>
               <button
                 onClick={() => setShowSetup(true)}
-                className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
-                title="Configuration des connexions"
+                className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-3 md:px-4 rounded-lg transition flex items-center gap-2 text-sm md:text-base"
+                title="Configuration"
               >
-                <Activity size={18} />
-                Config
+                <Activity size={16} className="md:w-5 md:h-5" />
+                <span className="hidden sm:inline">Config</span>
               </button>
             </div>
           </div>

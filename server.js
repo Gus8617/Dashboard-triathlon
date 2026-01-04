@@ -11,7 +11,17 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// Servir les fichiers statiques du build React
 app.use(express.static('public'));
+
+// Pour toutes les routes non-API, servir index.html (React Router)
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/') || req.path.startsWith('/auth/')) {
+    return next();
+  }
+  res.sendFile('index.html', { root: 'public' });
+});
 
 const PORT = process.env.PORT || 3000;
 
@@ -26,6 +36,10 @@ const config = {
   garmin: {
     email: process.env.GARMIN_EMAIL,
     password: process.env.GARMIN_PASSWORD
+  },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_CHAT_ID
   }
 };
 
@@ -94,7 +108,7 @@ app.get('/auth/strava/callback', async (req, res) => {
 });
 
 async function getValidStravaToken() {
-  const db = loadDB();
+  let db = loadDB();
   let tokens = db.tokens.strava;
 
   // Si pas de token en DB, utiliser celui du .env
@@ -106,12 +120,15 @@ async function getValidStravaToken() {
     };
   }
 
-  if (!tokens) throw new Error('Pas de tokens Strava (ni DB ni .env)');
+  if (!tokens) {
+    throw new Error('Pas de tokens Strava (ni DB ni .env)');
+  }
 
   const now = Date.now() / 1000;
   
   // Si le token est encore valide, le retourner
   if (tokens.accessToken && tokens.expiresAt > now) {
+    console.log('✓ Token existant encore valide');
     return tokens.accessToken;
   }
 
@@ -126,8 +143,10 @@ async function getValidStravaToken() {
     });
 
     console.log('✅ Token Strava rafraîchi avec succès');
+    console.log('   - Expire dans:', Math.round((response.data.expires_at - now) / 3600), 'heures');
 
     // Sauvegarder le nouveau token en DB
+    db = loadDB(); // Recharger pour éviter les conflits
     db.tokens.strava = {
       accessToken: response.data.access_token,
       refreshToken: response.data.refresh_token,
@@ -137,7 +156,21 @@ async function getValidStravaToken() {
 
     return response.data.access_token;
   } catch (error) {
-    console.error('❌ Erreur refresh token:', error.response?.data || error.message);
+    console.error('❌ Erreur refresh token Strava:');
+    console.error('   Message:', error.message);
+    if (error.response) {
+      console.error('   Status:', error.response.status);
+      console.error('   Data:', JSON.stringify(error.response.data, null, 2));
+    }
+    
+    // Si le refresh token est invalide, supprimer les tokens de la DB
+    if (error.response?.status === 400 || error.response?.status === 401) {
+      db = loadDB();
+      delete db.tokens.strava;
+      saveDB(db);
+      throw new Error('Refresh token invalide. Veuillez reconnecter votre compte Strava.');
+    }
+    
     throw new Error('Impossible de rafraîchir le token Strava: ' + (error.response?.data?.message || error.message));
   }
 }

@@ -12,7 +12,8 @@ export default function CalendarView({ onBack }) {
     name: '',
     duration: 60,
     distance: 10,
-    notes: ''
+    notes: '',
+    timeOfDay: 'morning' // morning, afternoon, evening
   });
 
   useEffect(() => {
@@ -132,7 +133,7 @@ export default function CalendarView({ onBack }) {
     
     savePlannedActivities([...plannedActivities, activity]);
     setShowAddModal(false);
-    setNewActivity({ type: 'run', name: '', duration: 60, distance: 10, notes: '' });
+    setNewActivity({ type: 'run', name: '', duration: 60, distance: 10, notes: '', timeOfDay: 'morning' });
     setSelectedDate(null);
   };
 
@@ -195,146 +196,218 @@ export default function CalendarView({ onBack }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-2 md:p-6">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">📅 Planning d'entraînement</h1>
-            <p className="text-gray-600">Visualisez et planifiez vos séances</p>
+        <div className="mb-4 md:mb-6">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl md:text-4xl font-bold text-gray-800 mb-1">📅 Planning</h1>
+              <p className="text-sm md:text-base text-gray-600">Visualisez et planifiez vos séances</p>
+            </div>
+            <button
+              onClick={onBack}
+              className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition text-sm md:text-base"
+            >
+              ← Retour
+            </button>
           </div>
-          <button
-            onClick={onBack}
-            className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition"
-          >
-            ← Retour
-          </button>
         </div>
 
         {/* Stats du mois */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm text-gray-600 mb-1">Séances réalisées</p>
-            <p className="text-3xl font-bold text-green-600">{monthStats.realized}</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-4 md:mb-6">
+          <div className="bg-white rounded-lg shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-600 mb-1">Réalisées</p>
+            <p className="text-2xl md:text-3xl font-bold text-green-600">{monthStats.realized}</p>
           </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm text-gray-600 mb-1">Séances planifiées</p>
-            <p className="text-3xl font-bold text-blue-600">{monthStats.planned}</p>
+          <div className="bg-white rounded-lg shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-600 mb-1">Planifiées</p>
+            <p className="text-2xl md:text-3xl font-bold text-blue-600">{monthStats.planned}</p>
           </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm text-gray-600 mb-1">Distance totale</p>
-            <p className="text-3xl font-bold text-purple-600">{monthStats.distance.toFixed(0)} km</p>
+          <div className="bg-white rounded-lg shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-600 mb-1">Distance</p>
+            <p className="text-2xl md:text-3xl font-bold text-purple-600">{monthStats.distance.toFixed(0)} km</p>
           </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm text-gray-600 mb-1">Temps total</p>
-            <p className="text-3xl font-bold text-orange-600">{formatDuration(monthStats.duration)}</p>
+          <div className="bg-white rounded-lg shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-600 mb-1">Temps</p>
+            <p className="text-2xl md:text-3xl font-bold text-orange-600">{formatDuration(monthStats.duration)}</p>
           </div>
         </div>
 
         {/* Navigation mois */}
-        <div className="bg-white rounded-lg shadow-lg p-4 mb-6">
+        <div className="bg-white rounded-lg shadow-lg p-3 md:p-4 mb-4 md:mb-6">
           <div className="flex items-center justify-between">
             <button
               onClick={handlePrevMonth}
               className="p-2 hover:bg-gray-100 rounded-lg transition"
             >
-              <ChevronLeft size={24} />
+              <ChevronLeft size={20} className="md:w-6 md:h-6" />
             </button>
-            <h2 className="text-2xl font-bold capitalize">{monthName}</h2>
+            <h2 className="text-lg md:text-2xl font-bold capitalize">{monthName}</h2>
             <button
               onClick={handleNextMonth}
               className="p-2 hover:bg-gray-100 rounded-lg transition"
             >
-              <ChevronRight size={24} />
+              <ChevronRight size={20} className="md:w-6 md:h-6" />
             </button>
           </div>
         </div>
 
-        {/* Calendrier */}
-        <div className="bg-white rounded-lg shadow-lg p-4 overflow-x-auto">
-          <table className="w-full min-w-[700px]">
-            <thead>
-              <tr>
-                <th className="w-12 text-xs font-semibold text-gray-600 pb-2">S</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Lun</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Mar</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Mer</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Jeu</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Ven</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Sam</th>
-                <th className="text-sm font-semibold text-gray-600 pb-2">Dim</th>
-              </tr>
-            </thead>
-            <tbody>
-              {weeks.map((week, weekIdx) => {
-                const weekNumber = getWeekNumber(week[0].date);
-                return (
-                  <tr key={weekIdx}>
-                    <td className="text-center text-xs font-bold text-gray-400 border-r border-gray-200">
-                      {weekNumber}
-                    </td>
-                    {week.map((day, dayIdx) => {
-                      const { realized, planned } = getActivitiesForDate(day.date);
-                      const today = isToday(day.date);
-                      
-                      return (
-                        <td
-                          key={dayIdx}
-                          className={`border border-gray-200 p-2 align-top h-24 ${
-                            !day.isCurrentMonth ? 'bg-gray-50' : ''
-                          } ${today ? 'bg-blue-50 border-blue-400' : ''} hover:bg-gray-50 transition cursor-pointer`}
-                          onClick={() => {
-                            if (day.isCurrentMonth) {
-                              setSelectedDate(day.date);
-                              setShowAddModal(true);
-                            }
-                          }}
-                        >
-                          <div className="flex justify-between items-start mb-1">
-                            <span className={`text-sm font-semibold ${
-                              !day.isCurrentMonth ? 'text-gray-400' : today ? 'text-blue-600' : 'text-gray-700'
-                            }`}>
-                              {day.date.getDate()}
-                            </span>
-                            {day.isCurrentMonth && (
-                              <Plus size={14} className="text-gray-400 hover:text-blue-600" />
-                            )}
+        {/* Calendrier - Version mobile */}
+        <div className="bg-white rounded-lg shadow-lg p-2 md:p-4 overflow-x-auto">
+          <div className="hidden md:block">
+            <table className="w-full min-w-[700px]">
+              <thead>
+                <tr>
+                  <th className="w-12 text-xs font-semibold text-gray-600 pb-2">S</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Lun</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Mar</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Mer</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Jeu</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Ven</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Sam</th>
+                  <th className="text-sm font-semibold text-gray-600 pb-2">Dim</th>
+                </tr>
+              </thead>
+              <tbody>
+                {weeks.map((week, weekIdx) => {
+                  const weekNumber = getWeekNumber(week[0].date);
+                  return (
+                    <tr key={weekIdx}>
+                      <td className="text-center text-xs font-bold text-gray-400 border-r border-gray-200">
+                        {weekNumber}
+                      </td>
+                      {week.map((day, dayIdx) => {
+                        const { realized, planned } = getActivitiesForDate(day.date);
+                        const today = isToday(day.date);
+                        
+                        return (
+                          <td
+                            key={dayIdx}
+                            className={`border border-gray-200 p-2 align-top h-24 ${
+                              !day.isCurrentMonth ? 'bg-gray-50' : ''
+                            } ${today ? 'bg-blue-50 border-blue-400' : ''} hover:bg-gray-50 transition cursor-pointer`}
+                            onClick={() => {
+                              if (day.isCurrentMonth) {
+                                setSelectedDate(day.date);
+                                setShowAddModal(true);
+                              }
+                            }}
+                          >
+                            <div className="flex justify-between items-start mb-1">
+                              <span className={`text-sm font-semibold ${
+                                !day.isCurrentMonth ? 'text-gray-400' : today ? 'text-blue-600' : 'text-gray-700'
+                              }`}>
+                                {day.date.getDate()}
+                              </span>
+                              {day.isCurrentMonth && (
+                                <Plus size={14} className="text-gray-400 hover:text-blue-600" />
+                              )}
+                            </div>
+                            
+                            <div className="space-y-1">
+                              {realized.map((act, idx) => (
+                                <div
+                                  key={idx}
+                                  className="text-xs bg-green-100 text-green-800 px-1 py-0.5 rounded truncate"
+                                  title={act.name}
+                                >
+                                  {getActivityIcon(act.type)} {(act.distance || 0).toFixed(1)}km
+                                </div>
+                              ))}
+                              {planned.map((act) => (
+                                <div
+                                  key={act.id}
+                                  className="text-xs bg-blue-100 text-blue-800 px-1 py-0.5 rounded flex items-center justify-between group"
+                                  title={`${act.timeOfDay === 'morning' ? '🌅' : act.timeOfDay === 'afternoon' ? '☀️' : '🌙'} ${act.name}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <span className="truncate">
+                                    {act.timeOfDay === 'morning' ? '🌅' : act.timeOfDay === 'afternoon' ? '☀️' : '🌙'}
+                                    {getActivityIcon(act.type)} {act.name}
+                                  </span>
+                                  <X
+                                    size={12}
+                                    className="ml-1 opacity-0 group-hover:opacity-100 cursor-pointer hover:text-red-600 flex-shrink-0"
+                                    onClick={() => handleDeletePlanned(act.id)}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Version mobile : Liste des jours */}
+          <div className="md:hidden space-y-2">
+            {days.filter(d => d.isCurrentMonth).map((day, idx) => {
+              const { realized, planned } = getActivitiesForDate(day.date);
+              const today = isToday(day.date);
+              const weekNumber = getWeekNumber(day.date);
+              
+              if (realized.length === 0 && planned.length === 0 && !today) return null;
+              
+              return (
+                <div
+                  key={idx}
+                  className={`border-2 rounded-lg p-3 ${
+                    today ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-white'
+                  }`}
+                  onClick={() => {
+                    setSelectedDate(day.date);
+                    setShowAddModal(true);
+                  }}
+                >
+                  <div className="flex justify-between items-center mb-2">
+                    <div>
+                      <span className="text-lg font-bold">{day.date.getDate()}</span>
+                      <span className="text-sm text-gray-600 ml-2">
+                        {day.date.toLocaleDateString('fr-FR', { weekday: 'short' })}
+                      </span>
+                      <span className="text-xs text-gray-400 ml-2">S{weekNumber}</span>
+                    </div>
+                    <Plus size={20} className="text-blue-500" />
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {realized.map((act, idx) => (
+                      <div key={idx} className="bg-green-100 text-green-800 p-2 rounded text-sm">
+                        <div className="font-semibold">{getActivityIcon(act.type)} {act.name}</div>
+                        <div className="text-xs">{(act.distance || 0).toFixed(1)} km • {formatDuration(act.duration || 0)}</div>
+                      </div>
+                    ))}
+                    {planned.map((act) => (
+                      <div
+                        key={act.id}
+                        className="bg-blue-100 text-blue-800 p-2 rounded text-sm flex items-start justify-between"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex-1">
+                          <div className="font-semibold">
+                            {act.timeOfDay === 'morning' ? '🌅 Matin' : act.timeOfDay === 'afternoon' ? '☀️ Après-midi' : '🌙 Soir'}
+                            {' • '}
+                            {getActivityIcon(act.type)} {act.name}
                           </div>
-                          
-                          <div className="space-y-1">
-                            {realized.map((act, idx) => (
-                              <div
-                                key={idx}
-                                className="text-xs bg-green-100 text-green-800 px-1 py-0.5 rounded truncate"
-                                title={act.name}
-                              >
-                                {getActivityIcon(act.type)} {act.distance?.toFixed(1)}km
-                              </div>
-                            ))}
-                            {planned.map((act) => (
-                              <div
-                                key={act.id}
-                                className="text-xs bg-blue-100 text-blue-800 px-1 py-0.5 rounded flex items-center justify-between group"
-                                title={act.name}
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <span className="truncate">{getActivityIcon(act.type)} {act.name}</span>
-                                <X
-                                  size={12}
-                                  className="ml-1 opacity-0 group-hover:opacity-100 cursor-pointer hover:text-red-600"
-                                  onClick={() => handleDeletePlanned(act.id)}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          <div className="text-xs">{act.distance} km • {formatDuration(act.duration)}</div>
+                        </div>
+                        <X
+                          size={18}
+                          className="ml-2 cursor-pointer hover:text-red-600 flex-shrink-0"
+                          onClick={() => handleDeletePlanned(act.id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Légende */}
@@ -380,6 +453,30 @@ export default function CalendarView({ onBack }) {
               </div>
 
               <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold mb-2">Moment de la journée</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { value: 'morning', label: '🌅 Matin', time: '6h-12h' },
+                      { value: 'afternoon', label: '☀️ AM', time: '12h-18h' },
+                      { value: 'evening', label: '🌙 Soir', time: '18h-22h' }
+                    ].map(time => (
+                      <button
+                        key={time.value}
+                        onClick={() => setNewActivity({ ...newActivity, timeOfDay: time.value })}
+                        className={`p-2 rounded-lg border-2 text-xs font-semibold transition ${
+                          newActivity.timeOfDay === time.value
+                            ? 'border-blue-500 bg-blue-50'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div>{time.label}</div>
+                        <div className="text-[10px] text-gray-500">{time.time}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-semibold mb-2">Type de séance</label>
                   <div className="grid grid-cols-3 gap-2">
