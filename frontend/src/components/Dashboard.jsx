@@ -14,6 +14,7 @@ export default function Dashboard() {
   const [trendData, setTrendData] = useState([]);
   const [recoveryScore, setRecoveryScore] = useState(0);
   const [showSetup, setShowSetup] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
 
   useEffect(() => {
     checkStatus();
@@ -612,6 +613,17 @@ export default function Dashboard() {
   const trainingState = getTrainingState();
   const zoneDistribution = getZoneDistribution();
 
+  // Afficher la vue calendrier
+  if (showCalendar) {
+    // Import dynamique du composant CalendarView
+    const CalendarView = React.lazy(() => import('./CalendarView'));
+    return (
+      <React.Suspense fallback={<div className="flex items-center justify-center min-h-screen">Chargement...</div>}>
+        <CalendarView onBack={() => setShowCalendar(false)} />
+      </React.Suspense>
+    );
+  }
+
   // Modal de configuration
   if (showSetup) {
     return (
@@ -731,14 +743,24 @@ GARMIN_PASSWORD=votre_mot_de_passe`}
               <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">🏊 Dashboard Triathlon Pro</h1>
               <p className="text-gray-600">Coaching intelligent • Analyse complète • Progression optimale</p>
             </div>
-            <button
-              onClick={() => setShowSetup(true)}
-              className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
-              title="Configuration des connexions"
-            >
-              <Activity size={18} />
-              Config
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowCalendar(true)}
+                className="bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
+                title="Vue agenda"
+              >
+                <Calendar size={18} />
+                Agenda
+              </button>
+              <button
+                onClick={() => setShowSetup(true)}
+                className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition flex items-center gap-2"
+                title="Configuration des connexions"
+              >
+                <Activity size={18} />
+                Config
+              </button>
+            </div>
           </div>
         </div>
 
